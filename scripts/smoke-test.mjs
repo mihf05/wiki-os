@@ -79,7 +79,7 @@ async function main() {
   await checkHtml("homepage shell", `${base}/`, "WikiOS");
   await checkJson("health", `${base}/api/health`, (d) => d.ok === true && Number.isInteger(d.totalPages));
   await checkJson("version", `${base}/api/version`, (d) => typeof d.commit === "string" && typeof d.commitShort === "string");
-  await checkJson("home data", `${base}/api/home`, (d) => Number.isInteger(d.totalPages) && typeof d.featured === "object" && d.featured !== null);
+  await checkJson("home data", `${base}/api/home`, (d) => Number.isInteger(d.totalPages) && Array.isArray(d.featured));
   await checkJson("stats", `${base}/api/stats`, (d) => Number.isInteger(d.total_pages) && Array.isArray(d.top_backlinks));
   await checkJson("search", `${base}/api/search?q=wiki`, (d) => Array.isArray(d.results));
 
@@ -88,7 +88,7 @@ async function main() {
     const { response, bodyText } = await request(`${base}/api/home`);
     if (response.ok) {
       const data = JSON.parse(bodyText);
-      featuredSlug = data?.featured?.slug ?? "";
+      featuredSlug = data?.featured?.[0]?.slug ?? "";
     }
   } catch {
     featuredSlug = "";

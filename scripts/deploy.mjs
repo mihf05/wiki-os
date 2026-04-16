@@ -15,6 +15,7 @@ const logDir = path.join(stateDir, "logs");
 const deployLog = path.join(logDir, "deploy.log");
 const MAX_CAPTURED_LINES = 400;
 const HEALTH_REQUEST_TIMEOUT_MS = 2_000;
+const ALLOWED_FLAGS = new Set(["--skip-pull", "--skip-install", "--skip-restart", "--skip-smoke"]);
 
 function timestamp() {
   return new Date().toLocaleTimeString("en-GB", { hour12: false });
@@ -29,6 +30,27 @@ async function log(message) {
 async function fail(message) {
   await log(`FATAL: ${message}`);
   process.exit(1);
+}
+
+function errorMessage(error, fallback) {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function parseFlags(argv) {
+  const flags = new Set(argv);
+
+  for (const flag of flags) {
+    if (!ALLOWED_FLAGS.has(flag)) {
+      throw new Error(`Unknown option: ${flag}`);
+    }
+  }
+
+  return {
+    skipPull: flags.has("--skip-pull"),
+    skipInstall: flags.has("--skip-install"),
+    skipRestart: flags.has("--skip-restart"),
+    skipSmoke: flags.has("--skip-smoke"),
+  };
 }
 
 function npmCommand() {
@@ -85,7 +107,11 @@ function run(command, args, options = {}) {
         return;
       }
 
-      reject(new Error(`${command} ${args.join(" ")} exited with code ${code ?? 1}`));
+      reject(
+        new Error(
+          `${command} ${args.join(" ")} exited with code ${code ?? 1}${output ? `\n${output}` : ""}`,
+        ),
+      );
     });
   });
 }
@@ -121,11 +147,7 @@ async function waitForHealth() {
 }
 
 async function main() {
-  const flags = new Set(process.argv.slice(2));
-  const skipPull = flags.has("--skip-pull");
-  const skipInstall = flags.has("--skip-install");
-  const skipRestart = flags.has("--skip-restart");
-  const skipSmoke = flags.has("--skip-smoke");
+  const { skipPull, skipInstall, skipRestart, skipSmoke } = parseFlags(process.argv.slice(2));
 
   await mkdir(logDir, { recursive: true });
   await writeFile(deployLog, "", "utf8");
@@ -138,8 +160,8 @@ async function main() {
     await log("Pulling latest from origin/main...");
     try {
       await run("git", ["pull", "origin", "main", "--ff-only"]);
-    } catch {
-      await fail("git pull failed — resolve conflicts first");
+    } catch (error) {
+      await fail(`git pull failed — resolve conflicts first\n${errorMessage(error, "git pull failed")}`);
     }
   } else {
     await log("Skipping git pull (--skip-pull)");
@@ -156,8 +178,8 @@ async function main() {
       const output = await runNpm(["install", "--prefer-offline"]);
       const lines = output.trim().split(/\r?\n/).filter(Boolean);
       await appendFile(deployLog, `${lines.slice(-3).join("\n")}${lines.length ? "\n" : ""}`, "utf8");
-    } catch {
-      await fail("npm install failed");
+    } catch (error) {
+      await fail(`npm install failed\n${errorMessage(error, "npm install failed")}`);
     }
   } else {
     await log("Skipping npm install (--skip-install)");
@@ -168,8 +190,8 @@ async function main() {
     const output = await runNpm(["run", "build"]);
     const lines = output.trim().split(/\r?\n/).filter(Boolean);
     await appendFile(deployLog, `${lines.slice(-8).join("\n")}${lines.length ? "\n" : ""}`, "utf8");
-  } catch {
-    await fail("Build failed");
+  } catch (error) {
+    await fail(`Build failed\n${errorMessage(error, "Build failed")}`);
   }
 
   await writeFile(
@@ -191,9 +213,13 @@ async function main() {
     if (restartCommand) {
       await log("Running restart command...");
       try {
-        await run(restartCommand, [], { shell: true });
-      } catch {
-        await fail("restart command failed");
+        if (process.platform === "win32") {
+          await run(restartCommand, [], { shell: true });
+        } else {
+          await run("bash", ["-lc", restartCommand]);
+        }
+      } catch (error) {
+        await fail(`restart command failed\n${errorMessage(error, "restart command failed")}`);
       }
     } else {
       await log("No WIKIOS_RESTART_COMMAND configured; restart your process manager manually if needed.");
@@ -221,9 +247,9 @@ async function main() {
       await log("═══════════════════════════════════════");
       await log(`Deploy complete ✓  (${commit})`);
       await log("═══════════════════════════════════════");
-    } catch {
+    } catch (error) {
       await log("═══════════════════════════════════════");
-      await log("DEPLOY FAILED — smoke tests did not pass");
+      await log(`DEPLOY FAILED — smoke tests did not pass\n${errorMessage(error, "Smoke tests failed")}`);
       await log(`Check: ${deployLog}`);
       await log("═══════════════════════════════════════");
       process.exit(1);
